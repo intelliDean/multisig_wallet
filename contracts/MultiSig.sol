@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.24;
 
+import "./Errors.sol";
+
+
 contract MultiSig {
     address private owner;
-    address[] private signers;
-    uint256 private quorum;
-    uint256 private txCount;
-
     address private nextOwner;
+
+    address[] private signers;
+    uint8 private quorum;
+    uint8 private txCount;
 
     struct Transaction {
         uint256 id;
@@ -31,21 +34,30 @@ contract MultiSig {
     mapping(address => bool) private isValidSigner;
 
 
-    constructor(address[] memory _validSigners, uint256 _quorum) {
-        owner = msg.sender;
-        signers = _validSigners;
-        quorum = _quorum;
+    constructor(address[] memory _validSigners) {
+        address _owner = msg.sender;
+        owner = _owner;
 
+        //this is to set all signers into a map
         for(uint8 i = 0; i < _validSigners.length; i++) {
-            require(_validSigners[i] != address(0), "get out");
-
+            if (_validSigners[i] == address(0)) {
+                continue;
+            }
             isValidSigner[_validSigners[i]] = true;
+            signers.push(_validSigners[i]);
         }
+
+        //this is to make the owner also a signer
+        signers.push(_owner);
+        isValidSigner[_owner] = true;
+
+        //this sets the quorum to 75$ of the signers
+       quorum = uint8((signers.length * 75) / 100);
     }
 
     function initiateTransaction(uint256 _amount, address _receiver) external {
-        require(msg.sender != address(0), "zero address detected");
-        require(_amount > 0, "no zero value allowed");
+        if (msg.sender == address(0)) revert Errors.ZERO_ADDRESS_NOT_ALLOWED();
+        if (_amount <= 0) revert Errors.ZERO_VALUE_NOT_ALLOWED();
 
         onlyValidSigner();
 
@@ -67,17 +79,18 @@ contract MultiSig {
     }
 
     function approveTransaction(uint256 _txId) external {
-        require(_txId <= txCount, "invalid transaction id");
-        require(msg.sender != address(0), "zero address detected");
+        if (_txId > txCount) revert Errors.INVALID_TRANSACTION_ID();
+        if (msg.sender == address(0)) revert Errors.ZERO_ADDRESS_NOT_ALLOWED();
 
         onlyValidSigner();
 
-        require(!hasSigned[_txId][msg.sender], "can't sign twice");
-        Transaction storage tns = transactions[_txId];
-        require(address(this).balance >= tns.amount, "insufficient contract balance");
+        if (hasSigned[_txId][msg.sender]) revert Errors.CANNOT_SIGN_MORE_THAN_ONCE();
 
-        require(!tns.isExecuted, "transaction already executed");
-        require(tns.signersCount < quorum, "quorum count reached");
+        Transaction storage tns = transactions[_txId];
+        if (address(this).balance < tns.amount) revert Errors.INSUFFICIENT_CONTRACT_BALANCE();
+
+        if (tns.isExecuted) revert Errors.TRANSACTION_ALREADY_EXECUTED();
+        if (tns.signersCount >= quorum) revert Errors.QUORUM_COUNT_REACHED();
 
         tns.signersCount = tns.signersCount + 1;
 
@@ -87,17 +100,15 @@ contract MultiSig {
             tns.isExecuted = true;
             payable(tns.receiver).transfer(tns.amount);
         }
-
     }
 
     function transferOwnership(address _newOwner) external {
         onlyOwner();
-
         nextOwner = _newOwner;
     }
 
     function claimOwnership() external {
-        require(msg.sender == nextOwner, "not next owner");
+        if (msg.sender != nextOwner) revert Errors.NOT_NEXT_OWNER();
 
         owner = msg.sender;
 
@@ -107,10 +118,13 @@ contract MultiSig {
     function addValidSigner(address _newSigner) external {
         onlyOwner();
 
-        require(!isValidSigner[_newSigner], "signer already exist");
+        if (isValidSigner[_newSigner]) revert Errors.SIGNER_ALREADY_EXIST();
 
         isValidSigner[_newSigner] = true;
         signers.push(_newSigner);
+
+        //75% of the total signers
+        quorum = uint8((signers.length * 75) / 100);
     }
 
     function getAllTransactions() external view returns (Transaction[] memory) {
@@ -118,11 +132,15 @@ contract MultiSig {
     }
 
     function onlyOwner() private view {
-        require(msg.sender == owner, "not owner");
+        if (msg.sender != owner) revert Errors.ONLY_OWNER_ALLOWED();
     }
 
     function onlyValidSigner() private view {
-        require(isValidSigner[msg.sender], "not valid signer");
+        if (!isValidSigner[msg.sender]) revert Errors.NOT_VALID_SIGNER();
+    }
+
+    function getAllSigners() external view returns (address[] memory) {
+        return signers;
     }
 
     receive() external payable {}
